@@ -1,0 +1,5 @@
+minikube start --cpus=8 --memory 16G --disk-size 10G  -p cluster-1 #
+minikube start --cpus=8 --memory 16G --disk-size 10G  -p cluster-2 #
+
+minikube -p cluster-1 addons enable metrics-server
+minikube -p cluster-2 addons enable metrics-server
