@@ -1,7 +1,7 @@
 #!/bin/bash
 #script to set up Vault with TLS on Minikube, mostly copied from here: https://developer.hashicorp.com/vault/tutorials/kubernetes/kubernetes-minikube-tls#install-the-vault-helm-chart
 #Start Minikube
-minikube start --cpus=8 --memory 16G --disk-size 10G  -p cluster-1
+minikube start --cpus=8 --memory 16G --disk-size 20G  -p cluster-1
 minikube -p cluster-1 addons enable metrics-server
 
 #Export the working directory location and the naming variables.
@@ -22,7 +22,7 @@ kubectl create secret generic vault-ent-license --namespace $VAULT_K8S_NAMESPACE
 openssl genrsa -out ${WORKDIR}/vault_primary.key 2048
 
 #Create the CSR configuration file
- cat > ${WORKDIR}/vault-csr_primary.conf <<EOF
+cat > ${WORKDIR}/vault-csr_primary.conf <<EOF
 [req]
 default_bits = 2048
 prompt = no
@@ -72,7 +72,9 @@ kubectl certificate approve vault.svc
 
 #Confirm the certificate was issued
 kubectl get csr vault.svc
+kubectl wait --for=condition=Issued csr vault.svc
 
+sleep 5 
 #Retrieve the certificate
 kubectl get csr vault.svc -o jsonpath='{.status.certificate}' | openssl base64 -d -A -out ${WORKDIR}/vault_primary.crt
 
@@ -87,17 +89,17 @@ kubectl config view \
 #Create the TLS secret
 kubectl create secret generic vault-ha-tls \
    -n $VAULT_K8S_NAMESPACE \
-   --from-file=vault_primary.key=${WORKDIR}/vault_primary.key \
-   --from-file=vault_primary.crt=${WORKDIR}/vault_primary.crt \
-   --from-file=vault_primary.ca=${WORKDIR}/vault_primary.ca
+   --from-file=vault.key=${WORKDIR}/vault_primary.key \
+   --from-file=vault.crt=${WORKDIR}/vault_primary.crt \
+   --from-file=vault.ca=${WORKDIR}/vault_primary.ca
 
 #Install Vault using the helm vaules file
 # helm install --dry-run -n $VAULT_K8S_NAMESPACE $VAULT_HELM_RELEASE_NAME hashicorp/vault -f ${WORKDIR}/overrides.yaml   
 helm install -n $VAULT_K8S_NAMESPACE $VAULT_HELM_RELEASE_NAME hashicorp/vault -f ${WORKDIR}/vault_primary.yaml   
-sleep 30
+sleep 3
 #Check Pods
-kubectl wait --for=condition=ready -n $VAULT_K8S_NAMESPACE pod vault-0 #-l app=netshoot 
-# kubectl -n $VAULT_K8S_NAMESPACE get pods
+#kubectl wait --for=condition=Running -n $VAULT_K8S_NAMESPACE pod -l app.kubernetes.io/name=vault 
+ kubectl -n $VAULT_K8S_NAMESPACE get pods
 
 #When all three Vault nodes are running , Initialize Vault.
 kubectl exec -n $VAULT_K8S_NAMESPACE vault-0 -- vault operator init \
@@ -110,3 +112,5 @@ VAULT_UNSEAL_KEY=$(jq -r ".unseal_keys_b64[]" ${WORKDIR}/vault_primary-cluster-k
 
 #Unseal Vault running on the vault-0 pod.
 kubectl exec -n $VAULT_K8S_NAMESPACE vault-0 -- vault operator unseal $VAULT_UNSEAL_KEY
+
+# minikube service vault --url --https  -n $VAULT_K8S_NAMESPACE -p cluster-1
