@@ -1,8 +1,8 @@
 #!/bin/bash
 #script to set up Vault with TLS on Minikube, mostly copied from here: https://developer.hashicorp.com/vault/tutorials/kubernetes/kubernetes-minikube-tls#install-the-vault-helm-chart
 #Start Minikube
-minikube start --cpus=8 --memory 16G --disk-size 20G  -p cluster-1
-minikube -p cluster-1 addons enable metrics-server
+minikube start --cpus=8 --memory 16G --disk-size 20G  -p cluster-2
+minikube -p cluster-2 addons enable metrics-server
 
 #Export the working directory location and the naming variables.
 export VAULT_K8S_NAMESPACE="vault" \
@@ -19,10 +19,10 @@ kubectl create secret generic vault-ent-license --namespace $VAULT_K8S_NAMESPACE
 
 
 #Generate the private key
-openssl genrsa -out ${WORKDIR}/vault_primary.key 2048
+openssl genrsa -out ${WORKDIR}/vault_secondary.key 2048
 
 #Create the CSR configuration file
-cat > ${WORKDIR}/vault-csr_primary.conf <<EOF
+cat > ${WORKDIR}/vault-csr_secondary.conf <<EOF
 [req]
 default_bits = 2048
 prompt = no
@@ -46,10 +46,10 @@ IP.1 = 127.0.0.1
 EOF
 
 #Generate the CSR
-openssl req -new -key ${WORKDIR}/vault_primary.key -out ${WORKDIR}/vault_primary.csr -config ${WORKDIR}/vault-csr_primary.conf
+openssl req -new -key ${WORKDIR}/vault_secondary.key -out ${WORKDIR}/vault_secondary.csr -config ${WORKDIR}/vault-csr_secondary.conf
 
 #Create the csr yaml file to send it to Kubernetes.
-cat > ${WORKDIR}/csr_vault_primary.yaml <<EOF
+cat > ${WORKDIR}/csr_vault_secondary.yaml <<EOF
 apiVersion: certificates.k8s.io/v1
 kind: CertificateSigningRequest
 metadata:
@@ -57,7 +57,7 @@ metadata:
 spec:
    signerName: kubernetes.io/kubelet-serving
    expirationSeconds: 8640000
-   request: $(cat ${WORKDIR}/vault_primary.csr|base64|tr -d '\n')
+   request: $(cat ${WORKDIR}/vault_secondary.csr|base64|tr -d '\n')
    usages:
    - digital signature
    - key encipherment
@@ -65,7 +65,7 @@ spec:
 EOF
 
 #deploy CSR to Kubernetes
-kubectl create -f ${WORKDIR}/csr_vault_primary.yaml
+kubectl create -f ${WORKDIR}/csr_vault_secondary.yaml
 
 #Approve the CSR in Kubernetes.
 kubectl certificate approve vault.svc
@@ -76,7 +76,7 @@ kubectl wait --for=condition=Issued csr vault.svc
 
 sleep 5 
 #Retrieve the certificate
-kubectl get csr vault.svc -o jsonpath='{.status.certificate}' | openssl base64 -d -A -out ${WORKDIR}/vault_primary.crt
+kubectl get csr vault.svc -o jsonpath='{.status.certificate}' | openssl base64 -d -A -out ${WORKDIR}/vault_secondary.crt
 
 #Retrieve Kubernetes CA certificate
 kubectl config view \
@@ -84,18 +84,18 @@ kubectl config view \
 --minify \
 --flatten \
 -o jsonpath='{.clusters[].cluster.certificate-authority-data}' \
-| base64 -d > ${WORKDIR}/vault_primary.ca
+| base64 -d > ${WORKDIR}/vault_secondary.ca
 
 #Create the TLS secret
 kubectl create secret generic vault-ha-tls \
    -n $VAULT_K8S_NAMESPACE \
-   --from-file=vault.key=${WORKDIR}/vault_primary.key \
-   --from-file=vault.crt=${WORKDIR}/vault_primary.crt \
-   --from-file=vault.ca=${WORKDIR}/vault_primary.ca
+   --from-file=vault.key=${WORKDIR}/vault_secondary.key \
+   --from-file=vault.crt=${WORKDIR}/vault_secondary.crt \
+   --from-file=vault.ca=${WORKDIR}/vault_secondary.ca
 
 #Install Vault using the helm vaules file
 # helm install --dry-run -n $VAULT_K8S_NAMESPACE $VAULT_HELM_RELEASE_NAME hashicorp/vault -f ${WORKDIR}/overrides.yaml   
-helm install -n $VAULT_K8S_NAMESPACE $VAULT_HELM_RELEASE_NAME hashicorp/vault -f ${WORKDIR}/vault_primary.yaml   
+helm install -n $VAULT_K8S_NAMESPACE $VAULT_HELM_RELEASE_NAME hashicorp/vault -f ${WORKDIR}/vault_secondary.yaml   
 sleep 3
 #Check Pods
 kubectl wait --for=condition=Running -n $VAULT_K8S_NAMESPACE pod -l app.kubernetes.io/name=vault 
@@ -105,14 +105,14 @@ kubectl -n $VAULT_K8S_NAMESPACE get pods
 kubectl exec -n $VAULT_K8S_NAMESPACE vault-0 -- vault operator init \
     -key-shares=1 \
     -key-threshold=1 \
-    -format=json > ${WORKDIR}/vault_primary-cluster-keys.json
+    -format=json > ${WORKDIR}/vault_secondary-cluster-keys.json
 
 #Create a variable named VAULT_UNSEAL_KEY to capture the Vault unseal key.
-VAULT_UNSEAL_KEY=$(jq -r ".unseal_keys_b64[]" ${WORKDIR}/vault_primary-cluster-keys.json)
+VAULT_UNSEAL_KEY=$(jq -r ".unseal_keys_b64[]" ${WORKDIR}/vault_secondary-cluster-keys.json)
 
 #Unseal Vault running on the vault-0 pod.
 kubectl exec -n $VAULT_K8S_NAMESPACE vault-0 -- vault operator unseal $VAULT_UNSEAL_KEY
-sleep 5
 
-# minikube dashboard -p cluster-1
-# minikube service -p cluster-1 vault-ui --url --https  -n $VAULT_K8S_NAMESPACE 
+
+# minikube dashboard -p cluster-2
+# minikube service -p cluster-2 vault-ui --url --https  -n $VAULT_K8S_NAMESPACE 
